@@ -4,14 +4,14 @@ import (
 	"context"
 	"os"
 
-	"github.com/redis/go-redis/v8"
+	"github.com/go-redis/redis/v8"
 )
 
 var Ctx = context.Background()
 
-func CreatrClient(dbNo int) *redis.Client {
-	rdb := redix.NewClient(&redis.Options{
-		addr:     os.Getenv("DB_ADDR "),
+func CreateClient(dbNo int) *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("DB_ADDR "),
 		Password: os.Getenv("DB_PASS"),
 		DB:       dbNo,
 	})
