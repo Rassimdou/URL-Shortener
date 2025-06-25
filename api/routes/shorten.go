@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"time"
@@ -8,9 +9,10 @@ import (
 	"github.com/Rassimdou/URL-Shortener/api/database"
 	"github.com/Rassimdou/URL-Shortener/api/helpers"
 	"github.com/asaskevich/govalidator"
-	"github.com/go-redis/redis/v8"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type request struct {
@@ -24,50 +26,93 @@ type response struct {
 	CustomShort     string        `json:"short"`
 	Expiry          time.Duration `json:"expiry"`
 	XRateRemaining  int           `json:"rate_limit"`
-	XRateLimitReset time.Duration `json:"rate_limit_reset"`
+	XRateLimitReset float64       `json:"rate_limit_reset"`
 }
 
 func ShortenURL(c *fiber.Ctx) error {
 	body := new(request)
 	if err := c.BodyParser(body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cannot parse JSON"})
-
 	}
-	//implement rate limiting
 
-	r2 := database.CreateClient(1)
-	defer r2.Close()
-	val, err := r2.Get(database.Ctx, c.IP()).Result()
-	if err == redis.Nil {
-		_ = r2.Set(database.Ctx, c.IP(), os.Getenv("API_QUOTA"), 30*60*time.Second).Err()
-	} else {
-		val, _ = r2.Get(database.Ctx, c.IP()).Result()
-		valInt, _ := strconv.Atoi(val)
-		if valInt <= 0 {
-			limit, _ := r2.TTL(database.Ctx, c.IP()).Result()
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error":           "rate limit exceeded",
-				"rate_limit_rest": limit / time.Nanosecond / time.Minute,
-			})
+	// Connect to MongoDB
+	client, err := database.CreateClient()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "cannot connect to the database",
+		})
+	}
+	defer client.Disconnect(context.Background())
 
+	statsCollection := database.GetStatsCollection(client)
+	urlsCollection := database.GetURLCollection(client)
+
+	// Rate limiting implementation
+	ip := c.IP()
+	var rateLimit struct {
+		Remaining int       `bson:"remaining"`
+		Reset     time.Time `bson:"reset"`
+	}
+
+	filter := bson.M{"_id": ip}
+	err = statsCollection.FindOne(database.Ctx, filter).Decode(&rateLimit)
+
+	quota, _ := strconv.Atoi(os.Getenv("APIQUOTA"))
+	now := time.Now()
+
+	if err == mongo.ErrNoDocuments {
+		// New IP - initialize rate limit
+		rateLimit = struct {
+			Remaining int       `bson:"remaining"`
+			Reset     time.Time `bson:"reset"`
+		}{
+			Remaining: quota - 1,
+			Reset:     now.Add(30 * time.Minute),
 		}
+		_, err = statsCollection.InsertOne(database.Ctx, bson.M{
+			"_id":       ip,
+			"remaining": rateLimit.Remaining,
+			"reset":     rateLimit.Reset,
+		})
+	} else {
+		// Existing IP - check rate limit
+		if rateLimit.Reset.Before(now) {
+			// Reset period passed
+			rateLimit.Remaining = quota - 1
+			rateLimit.Reset = now.Add(30 * time.Minute)
+		} else if rateLimit.Remaining <= 0 {
+			// Rate limit exceeded
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error":            "rate limit exceeded",
+				"rate_limit_reset": time.Until(rateLimit.Reset).Minutes(),
+			})
+		} else {
+			// Decrement remaining
+			rateLimit.Remaining--
+		}
+
+		// Update rate limit
+		update := bson.M{
+			"$set": bson.M{
+				"remaining": rateLimit.Remaining,
+				"reset":     rateLimit.Reset,
+			},
+		}
+		statsCollection.UpdateOne(database.Ctx, filter, update)
 	}
 
-	//check if URL is valid
+	// Validate URL
 	if !govalidator.IsURL(body.URL) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid URL"})
 	}
-
-	//check for domain error
 
 	if !helpers.RemoveDomainError(body.URL) {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "you cant hack the system (:"})
 	}
 
-	//enforce https ,SSL
-
 	body.URL = helpers.EnforceHTTP(body.URL)
 
+	// Generate or use custom short code
 	var id string
 	if body.CustomShort == "" {
 		id = uuid.New().String()[:6]
@@ -75,47 +120,41 @@ func ShortenURL(c *fiber.Ctx) error {
 		id = body.CustomShort
 	}
 
-	r := database.CreateClient(0)
-	defer r.Close()
-
-	val, _ = r.Get(database.Ctx, id).Result()
-	if val != "" {
+	// Check if short code exists
+	var existingURL struct{}
+	err = urlsCollection.FindOne(database.Ctx, bson.M{"shortCode": id}).Decode(&existingURL)
+	if err == nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "custom short URL already exists",
 		})
 	}
 
+	// Set default expiry
 	if body.Expiry == 0 {
 		body.Expiry = 24
-	} // default expiry time
+	}
 
-	err = r.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
+	// Create URL document
+	_, err = urlsCollection.InsertOne(database.Ctx, bson.M{
+		"shortCode":   id,
+		"originalUrl": body.URL,
+		"createdAt":   time.Now(),
+		"expiresAt":   time.Now().Add(time.Duration(body.Expiry) * time.Hour),
+		"clicks":      0,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Unable to connect to server"})
-
+			"error": "Unable to save URL",
+		})
 	}
 
 	resp := response{
 		URL:             body.URL,
-		CustomShort:     "",
+		CustomShort:     os.Getenv("DOMAIN") + "/" + id,
 		Expiry:          body.Expiry,
-		XRateRemaining:  10,
-		XRateLimitReset: 30,
+		XRateRemaining:  rateLimit.Remaining,
+		XRateLimitReset: time.Until(rateLimit.Reset).Minutes(),
 	}
 
-	r2.Decr(database.Ctx, c.IP())
-
-	val, _ = r2.Get(database.Ctx, c.IP()).Result()
-
-	resp.XRateRemaining, _ = strconv.Atoi(val)
-
-	ttl, _ := r2.TTL(database.Ctx, c.IP()).Result()
-
-	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute
-
-	resp.CustomShort = os.Getenv("DOMAIN") + "/" + id
-
 	return c.Status(fiber.StatusOK).JSON(resp)
-
 }
