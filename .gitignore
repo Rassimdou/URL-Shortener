@@ -1,0 +1,23 @@
+# Create .gitignore with standard content for Go and environment files
+@"
+# Environment files
+.env
+.env.*
+*.env
+.env.local
+
+# Go files
+bin/
+/pkg/
+*.exe
+*.test
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependency directories
+vendor/
+"@ | Out-File -FilePath .gitignore -Encoding utf8
