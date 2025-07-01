@@ -6,11 +6,9 @@ A high-performance URL shortening service built with Go and MongoDB, using the F
 
 - 📝 Shorten long URLs to compact, shareable links
 - 🔄 Redirect shortened URLs to their original destinations
-- 📊 Track statistics for each shortened URL
 - ⏳ URL expiration support
 - 🔒 Rate limiting to prevent abuse
 - 🔄 Automatic click tracking
-- 📅 Timestamp tracking for creation and last access
 
 ## Tech Stack
 
@@ -40,8 +38,8 @@ A high-performance URL shortening service built with Go and MongoDB, using the F
   ```json
   {
     "url": "https://example.com/long-url",
-    "short": "custom-short-code",  // Optional: custom short code
-    "expiry": 86400               // Optional: expiry duration in seconds (default: 24 hours)
+    "short": "custom-short-code", 
+    "expiry": 86400               
   }
   ```
 - **Response**:
@@ -50,8 +48,8 @@ A high-performance URL shortening service built with Go and MongoDB, using the F
     "url": "https://example.com/long-url",
     "short": "abc123",
     "expiry": 86400,
-    "rate_limit": 100,            // Remaining requests in current window
-    "rate_limit_reset": 1687898484.0  // Unix timestamp when rate limit resets
+    "rate_limit": 100,            
+    "rate_limit_reset": 1687898484.0  
   }
   ```
 
@@ -95,20 +93,5 @@ MONGODB_URI=mongodb://localhost:27017
    http://localhost:3000/abc123
    ```
 
-## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Fiber framework for Go
-- MongoDB for database storage
-- GoDotEnv for environment variables
